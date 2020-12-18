@@ -1,0 +1,35 @@
+FROM node:12.20.0
+
+ARG PORTAL_SRC=./cortx-management-portal
+ARG BRAND_NAME=CORTX
+ARG BRAND_DIR=./branding
+
+WORKDIR /portal
+
+COPY ${PORTAL_SRC}/gui /tmp/gui
+COPY ${PORTAL_SRC}/web ./web
+
+RUN cd ./web && npm install --production && npm run build-ts && cd -
+
+COPY ${BRAND_DIR}/public/ /tmp/gui/public
+COPY ${BRAND_DIR}/locales/ /tmp/gui/src/locales/
+COPY ${BRAND_DIR}/license/ /tmp/gui/src/common/
+
+# update .env file
+RUN sed -i '/#/!s/\(VUE_APP_BRANDNAME[[:space:]]*=[[:space:]]*\)\(.*\)/\1"'${BRAND_NAME}'"/' /tmp/gui/.env
+RUN cd /tmp/gui && npm install && npm run build && cd -
+RUN mv /tmp/dist/csm_gui/gui/ .
+RUN mv /tmp/gui/.env ./gui/.env
+
+COPY ./extra/stx.pem /etc/ssl/stx/
+
+RUN cp ./web/.env ./web/web-dist/.env
+RUN sed -i "s|CSM_UI_PATH=\"/\"|CSM_UI_PATH=\"/portal/gui/ui-dist\"|g" ./web/web-dist/.env    
+RUN sed -i "s/NODE_ENV=\"development\"/NODE_ENV=\"production\"/g" ./web/web-dist/.env 
+RUN sed -i "s/\(CSM_AGENT_HOST=\)\(.*\)/\1\"csm-agent\"/g" ./web/web-dist/.env
+
+RUN rm -rf /tmp/gui
+RUN rm -rf ./web/src
+
+EXPOSE 28100
+CMD ["node", "/portal/web/web-dist/server.js"]

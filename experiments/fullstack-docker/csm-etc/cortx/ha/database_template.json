@@ -1,0 +1,44 @@
+{
+    "databases": {
+        "consul_db": {
+            "import_path": "ConsulDB",
+            "config": {
+                "host": "<DOCKER_HOST_IP>",
+                "port": 8500,
+                "login": "",
+                "password": ""
+            }
+        },
+        "es_db": {
+            "import_path": "ElasticSearchDB",
+            "config": {
+                "host": "<DOCKER_HOST_IP>",
+                "port": 9200,
+                "login": "",
+                "password": "",
+                "replication": 1
+            }
+        }
+    },
+    "models": [
+        {
+            "import_path": "cortx.utils.ha.dm.models.decisiondb.DecisionModel",
+            "database": "consul_db",
+            "config": {
+                "consul_db": {
+                    "collection": "HA"
+                }
+            }
+        },
+        {
+            "import_path": "cortx.utils.product_features.model.UnsupportedFeaturesModel",
+            "database": "es_db",
+            "config": {
+                "es_db": {
+                    "collection": "config"
+                }
+            }
+        }
+
+    ]
+}

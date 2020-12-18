@@ -1,0 +1,34 @@
+FROM python:3.6.8
+
+ARG AGENT_SRC=./cortx-manager
+ARG UTILS_SRC=./cortx-utils
+ARG PRVSNR_SRC=./cortx-prvsnr
+
+COPY ${AGENT_SRC}/cicd/pyinstaller/requirment.txt /tmp/requirements.txt
+RUN python -m pip install -r /tmp/requirements.txt
+
+COPY ${UTILS_SRC} /tmp/utils-src
+RUN cd /tmp/utils-src/py-utils && pip install . && cd -
+
+COPY ${PRVSNR_SRC} /tmp/prvsnr-src
+RUN cd /tmp/prvsnr-src/api/python && pip install . && cd -
+
+RUN pip uninstall -y numpy
+RUN pip install numpy --no-binary :all:
+
+WORKDIR /csm
+COPY ${AGENT_SRC}/csm .
+COPY ./extra/stx.pem /etc/ssl/stx/
+COPY ./extra/ees-schema.json /opt/seagate/eos-prvsnr/generated_configs/healthmap/
+COPY ./extra/start_agent_docker.sh ./start_agent_docker.sh
+COPY ${AGENT_SRC}/schema /opt/seagate/cortx/csm/schema
+COPY ${AGENT_SRC}/templates /opt/seagate/cortx/csm/templates
+
+RUN groupadd haclient
+
+EXPOSE 28101
+
+VOLUME /etc/csm
+VOLUME /etc/cortx
+
+CMD ["/bin/bash", "./start_agent_docker.sh"]
