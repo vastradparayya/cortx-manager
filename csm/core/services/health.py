@@ -683,7 +683,6 @@ class HealthMonitorService(Service, Observable):
             Log.info("Stopping Health monitor thread")
             self._health_plugin.stop()
             Log.info("Joining Health monitor thread")
-            self._monitor_thread.join()
             self._monitor_thread.join(timeout=2.0)
             self._thread_started = False
             self._thread_running = False
