@@ -16,26 +16,32 @@
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from csm.common.comm import MessageBusComm
+import time
+
+comm_client = None
 
 def init(args):
     pass
 
 def callback_fn(message):
     print(f"Message received: {message}")
+    time.sleep(2)
+    comm_client.stop()
 
 def test_recv(args):
+    global comm_client
     ret = False
     message_bus = MessageBusComm()
+    comm_client = message_bus
     if message_bus:
         message_bus.init(type='consumer', consumer_id='csm',
                 consumer_group='test_group', consumer_message_types=["test-1"],
                 auto_ack=False, offset="earliest")
-        while True:
-            try:
-                message_bus.recv(callback_fn)
-                ret = True
-            except AttributeError:
-                break
+        try:
+            message_bus.recv(callback_fn)
+            ret = True
+        except AttributeError:
+            ret = False
     else:
         ret = False
     return ret

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # CORTX-CSM: CORTX Management web and CLI interface.
 # Copyright (c) 2020 Seagate Technology LLC and/or its Affiliates
 # This program is free software: you can redistribute it and/or modify
@@ -74,10 +76,6 @@ class CsmAgent:
         alerts_repository = AlertRepository(db)
         alerts_service = AlertsAppService(alerts_repository)
         CsmRestApi.init(alerts_service)
-
-        # settting usl polling
-        usl_polling_log = Conf.get(const.CSM_GLOBAL_INDEX, "Log>usl_polling_log")
-        CsmRestApi._app[const.USL_POLLING_LOG] = usl_polling_log
 
         # system status
         system_status_service = SystemStatusService()
@@ -159,7 +157,7 @@ class CsmAgent:
         CsmRestApi._app[const.S3_ACCOUNT_SERVICE] = S3AccountService(s3)
         CsmRestApi._app[const.S3_BUCKET_SERVICE] = S3BucketService(s3)
         CsmRestApi._app[const.S3_ACCESS_KEYS_SERVICE] = S3AccessKeysService(s3)
-        CsmRestApi._app[const.S3_SERVER_INFO_SERVICE] = S3ServerInfoService(provisioner)
+        CsmRestApi._app[const.S3_SERVER_INFO_SERVICE] = S3ServerInfoService()
 
         user_service = CsmUserService(provisioner, user_manager)
         CsmRestApi._app[const.CSM_USER_SERVICE] = user_service
@@ -178,7 +176,14 @@ class CsmAgent:
 
         CsmRestApi._app[const.APPLIANCE_INFO_SERVICE] = ApplianceInfoService()
         # USL Service
-        CsmRestApi._app[const.USL_SERVICE] = UslService(s3, db, provisioner)
+        try:
+            Log.info("Load USL Configurations")
+            Conf.load(const.USL_GLOBAL_INDEX, f"yaml://{const.USL_CONF}")
+            usl_polling_log = Conf.get(const.USL_GLOBAL_INDEX, "Log>usl_polling_log")
+            CsmRestApi._app[const.USL_POLLING_LOG] = usl_polling_log
+            CsmRestApi._app[const.USL_SERVICE] = UslService(s3, db, provisioner)
+        except Exception as e:
+            Log.warn(f"USL configuration not loaded: {e}")
 
         # Plugin for Maintenance
         # TODO : Replace PcsHAFramework with hare utility
@@ -232,6 +237,7 @@ class CsmAgent:
 
 if __name__ == '__main__':
     sys.path.append(os.path.join(os.path.dirname(pathlib.Path(__file__)), '..', '..', '..'))
+    sys.path.append(os.path.join(os.path.dirname(pathlib.Path(os.path.realpath(__file__))), '..', '..'))
     from cortx.utils.log import Log
     from csm.common.runtime import Options
     Options.parse(sys.argv)

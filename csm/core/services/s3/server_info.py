@@ -15,21 +15,28 @@
 
 from csm.common.services import ApplicationService
 from csm.common.service_urls import ServiceUrls
+from csm.common.errors import InvalidRequest
+
 
 class S3ServerInfoService(ApplicationService):
     """
     Service for acessing S3 server information
     """
 
-    def __init__(self, provisioner):
-        self._provisioner = provisioner
-
-    async def get_s3_server_info(self):
+    def get_s3_server_info(self, schemas):
         """
         Obtain information about S3 server in json format
+        :param schemas: List of supported schemas for s3_server_info eg. http,https,s3
+        :returns: s3_urls in json format based on the provided schemas
         """
-        service_urls = ServiceUrls(self._provisioner)
-        s3_urls = await service_urls.get_s3_uris()
+        supported_schemas = ServiceUrls.get_s3_supported_schemas()
+        if schemas is not None:
+            if not all(s in supported_schemas for s in schemas):
+                raise InvalidRequest(f'Unsupported schema in list of schemas {schemas}. '
+                    f'Supported schemas are {supported_schemas}')
+            s3_urls = [ServiceUrls.get_s3_uri(s) for s in schemas]
+        else:
+            s3_urls = [ServiceUrls.get_s3_uri(s) for s in supported_schemas]
         return {
             "s3_urls": s3_urls
         }

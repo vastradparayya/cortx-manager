@@ -13,12 +13,13 @@
 # For any questions about this software or licensing,
 # please email opensource@seagate.com or cortx-questions@seagate.com.
 
-from csm.common.service_urls import ServiceUrls
 from csm.core.blogic import const
 from csm.core.controllers.view import CsmView
 from cortx.utils.log import Log
 
+
 @CsmView._app_routes.view("/api/v1/s3")
+@CsmView._app_routes.view("/api/v2/s3")
 class S3ServerInfoView(CsmView):
     """
     S3 Server Info View for GET REST API implementation:
@@ -26,14 +27,18 @@ class S3ServerInfoView(CsmView):
     """
 
     def __init__(self, request):
-        super().__init__(request, const.S3_SERVER_INFO_SERVICE)
+        super().__init__(request)
+        self._service = self._request.app[const.S3_SERVER_INFO_SERVICE]
 
     async def get(self):
         """
         GET REST implementation for S3 server information request
 
-        :return:
+        :return: s3_urls in json format
         """
         Log.debug(f"Handling list s3 buckets fetch request."
                   f" user_id: {self.request.session.credentials.user_id}")
-        return await self._service.get_s3_server_info()
+        schemas = self.request.rel_url.query.get("schemas")
+        if schemas is not None:
+            schemas = schemas.split(',')
+        return self._service.get_s3_server_info(schemas)

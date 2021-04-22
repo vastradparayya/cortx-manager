@@ -18,8 +18,6 @@ import time
 
 from aiohttp import ClientSession, TCPConnector
 from aiohttp import ClientError as HttpClientError
-from boto.s3.bucket import Bucket
-from ipaddress import ip_address
 from random import SystemRandom
 from marshmallow import ValidationError
 from marshmallow.validate import URL
@@ -32,8 +30,10 @@ from csm.common.errors import (
 from csm.common.periodic import Periodic
 from cortx.utils.data.access import Query
 from cortx.utils.log import Log
+from csm.common.network_addresses import NetworkAddresses
 from csm.common.runtime import Options
 from csm.common.services import ApplicationService
+from csm.common.service_urls import ServiceUrls
 from csm.core.blogic import const
 from csm.core.services.storage_capacity import StorageCapacityService
 from csm.core.data.models.system_config import ApplianceName
@@ -44,7 +44,6 @@ from csm.core.services.usl_certificate_manager import (
     USLDomainCertificateManager, USLNativeCertificateManager, CertificateError
 )
 from csm.core.services.usl_s3 import UslS3BucketsManager
-from csm.plugins.cortx.provisioner import NetworkConfigFetchError
 from cortx.utils.security.secure_storage import SecureStorage
 from cortx.utils.security.cipher import Cipher
 
@@ -94,6 +93,7 @@ class UslService(ApplicationService):
         self._domain_certificate_manager = USLDomainCertificateManager(secure_storage)
         self._native_certificate_manager = USLNativeCertificateManager()
         self._api_key_dispatch = UslApiKeyDispatcher(self._storage)
+        Log.info("USL Service initialized")
 
     async def _get_system_friendly_name(self) -> str:
         entries = await self._storage(ApplianceName).get(Query())
@@ -108,9 +108,10 @@ class UslService(ApplicationService):
         """
         Returns the CORTX cluster ID as in CSM configuration file.
         """
-        cluster_id = Conf.get(const.CSM_GLOBAL_INDEX, 'PROVISIONER>cluster_id')
+        Log.info("Fetch cluster id from USL configuration")
+        cluster_id = Conf.get(const.USL_GLOBAL_INDEX, 'PROVISIONER>cluster_id')
         if Options.debug and cluster_id is None:
-            cluster_id = Conf.get(const.CSM_GLOBAL_INDEX, 'DEBUG>default_cluster_id')
+            cluster_id = Conf.get(const.USL_GLOBAL_INDEX, 'DEBUG>default_cluster_id')
         device_uuid = cluster_id
         if device_uuid is None:
             reason = 'Could not obtain cluster ID from CSM configuration file'
@@ -135,7 +136,7 @@ class UslService(ApplicationService):
         """Generates the CORTX volume (bucket) UUID from CORTX device UUID and bucket name."""
         return uuid5(self._device_uuid, bucket_name)
 
-    async def _format_bucket_as_volume(self, bucket: Bucket) -> Volume:
+    async def _format_bucket_as_volume(self, bucket) -> Volume:
         bucket_name = bucket.name
         volume_name = await self._get_volume_name(bucket_name)
         device_uuid = self._device_uuid
@@ -269,7 +270,7 @@ class UslService(ApplicationService):
 
         :return: Dictionary containing SaaS URL
         """
-        saas_url = Conf.get(const.CSM_GLOBAL_INDEX, 'UDS>saas_url')
+        saas_url = Conf.get(const.USL_GLOBAL_INDEX, 'UDS>saas_url')
         if saas_url is None:
             reason = 'Lyve Pilot SaaS URL is not configured'
             Log.debug(reason)
@@ -290,7 +291,7 @@ class UslService(ApplicationService):
 
         :param registration_info: UDS registration info
         """
-        uds_url = Conf.get(const.CSM_GLOBAL_INDEX, 'UDS>url') or const.UDS_SERVER_DEFAULT_BASE_URL
+        uds_url = Conf.get(const.USL_GLOBAL_INDEX, 'UDS>url') or const.UDS_SERVER_DEFAULT_BASE_URL
         try:
             validate_url = URL(schemes=('http', 'https'))
             validate_url(uds_url)
@@ -351,7 +352,7 @@ class UslService(ApplicationService):
             raise e
 
     async def get_register_device(self) -> None:
-        uds_url = Conf.get(const.CSM_GLOBAL_INDEX, 'UDS>url') or const.UDS_SERVER_DEFAULT_BASE_URL
+        uds_url = Conf.get(const.USL_GLOBAL_INDEX, 'UDS>url') or const.UDS_SERVER_DEFAULT_BASE_URL
         endpoint_url = str(uds_url) + '/uds/v1/registration/RegisterDevice'
         # FIXME add relevant certificates to SSL context instead of disabling validation
         async with ClientSession(connector=TCPConnector(verify_ssl=False)) as session:
@@ -369,26 +370,19 @@ class UslService(ApplicationService):
         token = ''.join(SystemRandom().sample('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 12))
         return {'registrationToken': token}
 
-    async def _get_mgmt_url(self) -> Dict[str, str]:
+    def _get_mgmt_url(self) -> Dict[str, str]:
         """
         Returns a management link to be provided to the UDS.
 
         :return: a dictionary with a management link's name and value.
         """
-        ssl_check = Conf.get(const.CSM_GLOBAL_INDEX, 'CSM_SERVICE>CSM_WEB>ssl_check')
-        network_configuration = await self._provisioner.get_network_configuration()
-        port = \
-            Conf.get(const.CSM_GLOBAL_INDEX, 'CSM_SERVICE>CSM_WEB>port') or const.WEB_DEFAULT_PORT
-        scheme = 'https' if ssl_check else 'http'
-        host = f'{network_configuration.mgmt_vip}'
-        url = scheme + '://' + host + ':' + str(port)
-        mgmt_url = {
+        mgmt_url = ServiceUrls.get_mgmt_url()
+        return {
             'name': 'mgmtUrl',
-            'url': url,
+            'url': mgmt_url,
         }
-        return mgmt_url
 
-    async def _get_service_urls(self) -> List[Dict[str, str]]:
+    def _get_service_urls(self) -> List[Dict[str, str]]:
         """
         Gathers all service URLs to be provided to the UDS.
 
@@ -396,7 +390,7 @@ class UslService(ApplicationService):
         """
 
         service_urls = []
-        mgmt_url = await self._get_mgmt_url()
+        mgmt_url = self._get_mgmt_url()
         service_urls.append(mgmt_url)
         return service_urls
 
@@ -408,7 +402,7 @@ class UslService(ApplicationService):
         :return: A dictionary containing system information.
         """
         friendly_name = await self._get_system_friendly_name()
-        service_urls = await self._get_service_urls()
+        service_urls = self._get_service_urls()
         return {
             'model': 'CORTX',
             'type': 'ees',
@@ -484,30 +478,6 @@ class UslService(ApplicationService):
             raise CsmNotFoundError(reason)
         return material
 
-    async def _get_public_ip(self) -> str:
-        """
-        Reads UDS public IP from global index in an attempt to override UDS default behavior.
-        If it is not found, uses cluster IP as UDS public IP.
-
-        :return: A string representing UDS public IP address.
-        """
-        try:
-            ip = Conf.get(const.CSM_GLOBAL_INDEX, 'UDS>public_ip')
-            ip_address(ip)
-            return ip
-        except ValueError as e:
-            reason = 'UDS public IP override failed---following usual code path'
-            Log.debug(f'{reason}. Error: {e}')
-        try:
-            conf = await self._provisioner.get_network_configuration()
-            ip = conf.cluster_ip
-            ip_address(ip)
-            return ip
-        except (ValueError, NetworkConfigFetchError) as e:
-            reason = 'Could not obtain network configuration from provisioner'
-            Log.error(f'{reason}: {e}')
-            raise CsmInternalError(reason) from e
-
     async def get_network_interfaces(self) -> List[Dict[str, Any]]:
         """
         Provides a list of network interfaces to be advertised by UDS.
@@ -516,7 +486,9 @@ class UslService(ApplicationService):
             network interface.
         """
         try:
-            ip = await self._get_public_ip()
+            # FIXME for R2/PI-1 we are using the public data IP of the active node due to the lack
+            # of a load-balancing interface such cluster IP on R1.
+            ip = NetworkAddresses.get_node_public_data_ip_addr()
             iface_data = get_interface_details(ip)
         except (ValueError, RuntimeError) as e:
             reason = f'Could not obtain interface details from address {ip}'

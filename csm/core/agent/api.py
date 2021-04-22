@@ -20,11 +20,13 @@ import asyncio
 import json
 import traceback
 import ssl
+import time
 from concurrent.futures import CancelledError as ConcurrentCancelledError
 from asyncio import CancelledError as AsyncioCancelledError
 from weakref import WeakSet
 from aiohttp import web, web_exceptions
 from abc import ABC
+from ipaddress import ip_address
 from secure import SecureHeaders
 from csm.core.providers.provider_factory import ProviderFactory
 from csm.core.providers.providers import Request, Response
@@ -120,9 +122,10 @@ class CsmRestApi(CsmApi, ABC):
     def update_roles_permission():
         # Remove lyve_pilot permission if it is not supported
         try:
+            _loop = asyncio.get_event_loop()
             roles = Json(const.ROLES_MANAGEMENT).load()
             unsupported_feature_instance = unsupported_features.UnsupportedFeaturesDB()
-            feature_supported = CsmRestApi._app._loop.run_until_complete(
+            feature_supported = _loop.run_until_complete(
                 unsupported_feature_instance.is_feature_supported(
                     const.CSM_COMPONENT_NAME, const.LYVE_PILOT))
 
@@ -141,35 +144,51 @@ class CsmRestApi(CsmApi, ABC):
         return 'debug' in request.rel_url.query
 
     @staticmethod
-    def http_request_to_log_string(request):
+    def generate_audit_log_string(request, **kwargs):
+        if (getattr(request, "session", None) is not None
+                and getattr(request.session, "credentials", None) is not None):
+            user = request.session.credentials.user_id
+        else:
+            user = None
         remote_ip = request.remote
-        url = request.path
+        forwarded_for_ip = str(request.headers.get('X-Forwarded-For')).split(',', 2)[0].strip()
+        try:
+            ip_address(forwarded_for_ip)
+        except ValueError:
+            forwarded_for_ip = None
+        path = request.path
         method = request.method
         user_agent = request.headers.get('User-Agent')
-        return (f"Remote_IP:{remote_ip} Url:{url} Method:{method} User-Agent:{user_agent}")
+        entry = {
+            'user': user,
+            'remote_ip': remote_ip,
+            'forwarded_for_ip': forwarded_for_ip,
+            'method': method,
+            'path': path,
+            'user_agent': user_agent,
+            'response_code': kwargs.get("response_code", ""),
+            'request_id': kwargs.get("request_id", int(time.time()))
+        }
+        return json.dumps(entry)
 
     @staticmethod
-    def process_audit_log(resp, request, status):
+    def process_audit_log(request, **kwargs):
         url = request.path
         if (not request.app[const.USL_POLLING_LOG]
                 and url.startswith('/usl/')
-                and url != "/usl/v1/registerDevice"):
+                and not url.endswith('/registerDevice')):
             return
-        audit = CsmRestApi.http_request_to_log_string(request)
-        if (getattr(request, "session", None) is not None
-                and getattr(request.session, "credentials", None) is not None):
-            Log.audit(f'User: {request.session.credentials.user_id} '
-                      f'{audit} RC: {status}')
-        else:
-            Log.audit(f'{audit} RC: {status}')
+        entry = CsmRestApi.generate_audit_log_string(request, **kwargs)
+        Log.audit(f'{entry}')
 
     @staticmethod
-    def error_response(err: Exception, request) -> dict:
+    def error_response(err: Exception, **kwargs) -> dict:
         resp = {
             "error_code": None,
             "message": None,
         }
 
+        request = kwargs.get("request")
         if CsmRestApi.is_debug(request):
             resp["stacktrace"] = traceback.format_exc().splitlines()
 
@@ -188,7 +207,8 @@ class CsmRestApi(CsmApi, ABC):
         else:
             resp["message"] = f'{str(err)}'
 
-        CsmRestApi.process_audit_log(resp, request, resp['error_code'])
+        CsmRestApi.process_audit_log(request, response_code=resp['error_code'], \
+                request_id = kwargs.get("request_id", int(time.time())))
         return resp
 
     @staticmethod
@@ -300,8 +320,8 @@ class CsmRestApi(CsmApi, ABC):
     @staticmethod
     @web.middleware
     async def rest_middleware(request, handler):
-
         try:
+            request_id = int(time.time())
             await CsmRestApi.check_for_unsupported_endpoint(request)
 
             resp = await handler(request)
@@ -311,7 +331,7 @@ class CsmRestApi(CsmApi, ABC):
                 return file_resp
 
             if isinstance(resp, web.StreamResponse):
-                Log.audit(f'{CsmRestApi.http_request_to_log_string(request)} RC: {resp.status}')
+                CsmRestApi.process_audit_log(request, response_code = resp.status, request_id = request_id)
                 return resp
 
             status = 200
@@ -322,7 +342,7 @@ class CsmRestApi(CsmApi, ABC):
                     Log.error(f"Error: ({status}):{resp_obj['message']}")
             else:
                 resp_obj = resp
-            CsmRestApi.process_audit_log(resp, request, status)
+            CsmRestApi.process_audit_log(request, response_code = status, request_id = request_id)
             return CsmRestApi.json_response(resp_obj, status)
         # todo: Changes for handling all Errors to be done.
 
@@ -336,31 +356,31 @@ class CsmRestApi(CsmApi, ABC):
             raise e
         except InvalidRequest as e:
             Log.error(f"Error: {e} \n {traceback.format_exc()}")
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=400)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=400)
         except CsmNotFoundError as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=404)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=404)
         except CsmPermissionDenied as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=403)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=403)
         except ResourceExist  as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request),
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id),
                                             status=const.STATUS_CONFLICT)
         except CsmInternalError as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=500)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=500)
         except CsmNotImplemented as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=501)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=501)
         except CsmGatewayTimeout as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=504)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=504)
         except CsmServiceConflict as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=409)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=409)
         except (CsmError, InvalidRequest) as e:
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=400)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=400)
         except KeyError as e:
             Log.error(f"Error: {e} \n {traceback.format_exc()}")
             message = f"Missing Key for {e}"
-            return CsmRestApi.json_response(CsmRestApi.error_response(KeyError(message), request), status=422)
+            return CsmRestApi.json_response(CsmRestApi.error_response(KeyError(message), request = request, request_id = request_id), status=422)
         except Exception as e:
             Log.critical(f"Unhandled Exception Caught: {e} \n {traceback.format_exc()}")
-            return CsmRestApi.json_response(CsmRestApi.error_response(e, request), status=500)
+            return CsmRestApi.json_response(CsmRestApi.error_response(e, request = request, request_id = request_id), status=500)
 
     @staticmethod
     def run(port: int, https_conf: ConfSection, debug_conf: DebugConf):
