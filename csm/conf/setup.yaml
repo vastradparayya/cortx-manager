@@ -27,8 +27,8 @@ csm:
         args: --config $URL
 
     init:
-        cmd: /opt/seagate/cortx/csm/bin/csm_setup init
-        args: --config $URL
+        cmd: /opt/seagate/cortx/csm/bin/csm_setup init_fail
+        args: --config_fail $URL
 
     test:
         cmd: /opt/seagate/cortx/csm/bin/csm_setup test
